@@ -104,10 +104,61 @@ update_template() {
 }
 
 redmine_finalize_database_parameters() {
+  if [[ -n ${AWS_DB_CREDENTIALS_SECRET_NAME} ]]; then
+    echo "Obtendo credenciais do Secrets Manager..."
+
+    # Define a região prioritariamente
+    local REGION=${AWS_DB_CREDENTIALS_SECRET_REGION:-${AWS_REGION}}
+    local SECRET_OUTPUT
+
+    # Recupera o segredo usando o AWS CLI
+    if [[ -n ${REGION} ]]; then
+      SECRET_OUTPUT=$(aws secretsmanager get-secret-value \
+        --region "${REGION}" \
+        --secret-id "${AWS_DB_CREDENTIALS_SECRET_NAME}" \
+        --output json)
+    else
+      SECRET_OUTPUT=$(aws secretsmanager get-secret-value \
+        --secret-id "${AWS_DB_CREDENTIALS_SECRET_NAME}" \
+        --output json)
+    fi
+
+    # Checa se o comando foi bem-sucedido
+    if [[ $? -ne 0 || -z "${SECRET_OUTPUT}" ]]; then
+      echo "Erro ao recuperar as credenciais do Secrets Manager. Certifique-se de que as permissões e configurações estão corretas."
+      return 1
+    fi
+
+    # Extrai o conteúdo de SecretString
+    local SECRET_STRING=$(echo "${SECRET_OUTPUT}" | jq -r '.SecretString')
+
+    # Parse do JSON do SecretString
+    DB_USER=$(echo "${SECRET_STRING}" | jq -r '.username')
+    DB_PASS=$(echo "${SECRET_STRING}" | jq -r '.password')
+    DB_ADAPTER=$(echo "${SECRET_STRING}" | jq -r '.engine')
+    DB_HOST=$(echo "${SECRET_STRING}" | jq -r '.host')
+    DB_PORT=$(echo "${SECRET_STRING}" | jq -r '.port')
+
+    # Configura o encoding e adapter padrão com base no engine
+    case ${DB_ADAPTER} in
+      postgres | postgresql)
+        DB_ADAPTER=postgresql
+        DB_ENCODING=${DB_ENCODING:-unicode}
+        ;;
+      mysql | mysql2)
+        DB_ADAPTER=mysql2
+        DB_ENCODING=${DB_ENCODING:-utf8}
+        ;;
+      *)
+        echo "Erro: Engine '${DB_ADAPTER}' não suportado. Somente 'postgresql' e 'mysql2' são aceitos. Aborting..."
+        return 1
+        ;;
+    esac
+
   # is a mysql or postgresql database linked?
   # requires that the mysql or postgresql containers have exposed
   # port 3306 and 5432 respectively.
-  if [[ -n ${MYSQL_PORT_3306_TCP_ADDR} ]]; then
+  elif [[ -n ${MYSQL_PORT_3306_TCP_ADDR} ]]; then
     DB_ADAPTER=${DB_ADAPTER:-mysql2}
     DB_HOST=${DB_HOST:-mysql}
     DB_PORT=${DB_PORT:-${MYSQL_PORT_3306_TCP_PORT}}
